@@ -7,7 +7,7 @@ Plugin to extract data about project dependencies + Tool to visualize this data
 3. Init the dependencyStory Plugin
     - Add the following line in the buildscript of your project which dependencies you like to visualize
     
-           -> apply from: "PATH/DependencyStory/DependencyStoryPlugin.gradle"
+           apply from: "PATH/DependencyStory/DependencyStoryPlugin.gradle"
     - Define the path to the assets folder of the dependency story app in the plugin-gradlescript
     
       in dependencyStoryPlugin.gradle in line 82: def path = "PATH/DependencyStory/src/assets"
