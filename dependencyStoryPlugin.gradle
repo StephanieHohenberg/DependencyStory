@@ -1,0 +1,443 @@
+apply plugin: DependenciesPlugin 
+//TODO apply from: "C:/Users/hohenberg/Documents/DependencyStory/dependencyStoryPlugin.gradle" im Buildskipt (build.gradle) des Projektes
+
+class DependenciesPlugin implements Plugin<Project>{
+
+
+   
+
+    class myNode{
+        String id // group:name:version
+        String group 
+        String name
+        String version
+        def dependencies = [] //DependencyId mit sourceId = id
+        def targetDependencies = [] //DependencyId mit targedId = id   
+        def branchVersions = []
+
+        void addDep(Integer depId){
+            dependencies.add(depId)
+        }
+
+        void addBranchVersion(String version){
+            if(!branchVersions.contains(version)){
+                branchVersions.add(version)
+            }
+        }
+
+        void addTargetDep(Integer depId){
+            targetDependencies.add(depId)
+        }
+
+
+    }
+
+    class myLibrary extends myNode{}
+
+    class myModule extends myNode{
+         String rootId 
+         def subModules = [] 
+         def description
+         String path
+
+        void addSub(String nodeId){
+            subModules.add(nodeId)
+        }
+
+    }
+
+    class myDependency{ //source ist abhaengig von target in configuration
+        String sourceId 
+        String targetId
+        Integer depId
+        def configurations = []
+        def branchVersions = []
+
+        void addBranchVersion(String version){
+            if(!branchVersions.contains(version)){
+                branchVersions.add(version)
+            }
+        }
+
+    }
+
+    class Configuration{ 
+        String name 
+    }
+
+
+    void apply(Project buildProject){
+       
+
+        buildProject.task('extractData'){
+
+             def path = "C:/Users/hohenberg/Documents/DependencyStory"
+             def jsonExtension ="/dependencyStoryData.json"
+             def htmlExtension ="/dependencyStoryVizualization.html"
+
+
+            def groups=[]
+            def allConfigurations = []
+            def nodeMap = [:] //id:myNode
+            def depMap = [:] //id:myDependency
+            def libsWithMultipleVersionsList = [] //shortIds
+            def modulesWithDoubleNameList = [] //pathIds
+            def placeholderModulesMap = [:]
+            def isLastTargetNodeLibrary=false
+            def alreadyExtracted = false
+
+            def String currentBranchVersion = ""
+            def allBranchVersions = []
+
+            def idCreator=-1
+            ext.nextId ={
+                idCreator=idCreator+1
+                return idCreator
+            }
+
+
+            //Bibliotheken, die in vers Versionen vorhanden sind, werden aufgelistet
+            ext.extractLibsWithMultipleList ={ libsMap ->
+                def libsGroupedByGroupMap = libsMap.values().groupBy{ it.group }
+
+                libsGroupedByGroupMap.collect{ group, libsWithSameGroupList ->
+                    def libsGroupedByGroupAndNameMap = libsWithSameGroupList.groupBy{ it.name }
+                    if(libsGroupedByGroupAndNameMap.size()!=libsWithSameGroupList.size()){
+                        libsGroupedByGroupAndNameMap.collect{ name, libsWithSameGroupAndVersionList ->
+                            if(libsWithSameGroupAndVersionList.size()>1){
+                               libsWithMultipleVersionsList << (group+":"+name)
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            //Bibliotheken, die in vers Versionen vorhanden sind, werden aufgelistet
+            ext.extractModulesWithDoubleName ={ moduleMap ->
+                def modulesGroupedByGroupMap = moduleMap.values().groupBy{ it.group }
+
+                modulesGroupedByGroupMap.collect{ group, modulesWithSameGroupList ->
+                    def modulesGroupedByGroupAndNameMap = modulesWithSameGroupList.groupBy{ it.name }
+                    if(modulesGroupedByGroupAndNameMap.size()!=modulesWithSameGroupList.size()){
+                        modulesGroupedByGroupAndNameMap.collect{ name, modulesWithSameGroupAndDifferentRootIdList ->
+                            if(modulesWithSameGroupAndDifferentRootIdList.size()>1){
+                               modulesWithDoubleNameList<< (group+":"+name)
+                            }
+                        }
+                    }
+                }
+            }
+
+
+  
+            ext.getIdForTarget = { dep ->
+                isLastTargetNodeLibrary=false
+                if(groups.contains(dep.getModuleGroup())){ //
+                	def moduleList = getModuleIdByGroupAndName(dep)
+                    if(moduleList.size()==0){ 
+                        isLastTargetNodeLibrary=true
+                        return (dep.getModuleGroup()+":"+dep.getModuleName()+":"+dep.getModuleVersion()) //Library
+                    } else if(moduleList.size()==1){ 
+                    	return moduleList[0].id //Module
+                    } else{
+                        return  (dep.getModuleGroup()+":"+dep.getModuleName())  
+                    }
+                }else{ //Library
+                    isLastTargetNodeLibrary=true
+                    return  (dep.getModuleGroup()+":"+dep.getModuleName()+":"+dep.getModuleVersion())  
+                }
+            }
+
+              ext.getModuleIdByGroupAndName = { dep ->
+            	def group = dep.getModuleGroup()
+            	def name = dep.getModuleName()
+                def allModulesWithGroupAndNameMap = nodeMap.findAll { it.value instanceof myModule && it.value.group == group && it.value.name == name }
+                def allModulesWithGroupAndNameList = allModulesWithGroupAndNameMap.values()
+                return allModulesWithGroupAndNameList
+            }
+
+
+
+
+            //Dependencies, die den Targetknoten von Dep als Sourceknoten haben, werden extrahiert und all deren transitiven Dependencies
+            //- Methode extrahiert transitive Dependencies nur falls, es sich um eine externe Dependency handelt, also wenn der Targetknoten eine Library ist
+            //- weil ModulDependencies in der Methode 'extractModuleDependencies' extrahiert werden
+            ext.extractTransitiveDependencies = { conf, dep ->
+                def targetId = getIdForTarget(dep)
+                if(isLastTargetNodeLibrary){ //wenn der Zielknoten eine Library ist, 
+                    dep.getChildren().each{ //werden dessen Dependencies extrahiert
+                        saveDependency(it, conf, targetId) 
+                        if(!alreadyExtracted){
+                        	extractTransitiveDependencies(conf, it)
+                    	}
+                    }
+                }   
+            }
+
+             ext.extractAllTargetDepConfigurations = { lib -> 
+                def confs = []
+                lib.targetDependencies.each{ id ->
+                    confs = confs + depMap.get(id).configurations 
+                }
+                return confs.unique { a, b -> a <=> b }
+            }
+
+
+
+
+            // speichert die Abhängigkeit und den Targetnode (wenn dieser nicht bereits existiert) ab
+            //- falls die Abhängigkeit bereits existiert, wird diese evtl um die Konfiguration geupdatet
+            //- falls der TargetNode ein Modul ist, wird nur ein PLatzhalterModul erstellt
+            ext.saveDependency ={dep, conf, sourceId -> 
+                    def sourceNode = nodeMap.get(sourceId)
+                    def targetNode = null
+                    def targetId = getIdForTarget(dep)
+                    def myDep = null
+                    alreadyExtracted=false
+
+                    //TARGETNODE existiert bereits
+                    if(nodeMap.containsKey(targetId)){ 
+                        targetNode= nodeMap.get(targetId)
+                        targetNode.addBranchVersion(currentBranchVersion)
+
+                        sourceNode.dependencies.each{ depId ->
+                            if(depMap.get(depId).targetId.equals(targetId)){ //Dependency exisitiert bereits
+                                myDep = depMap.get(depId)
+                                myDep.addBranchVersion(currentBranchVersion)
+
+                                //Konfiguration wird hinzugefügt
+                                if(!myDep.configurations.contains(conf.name)){
+                                    myDep.configurations.add(conf.name) 
+                                }else{
+                                	alreadyExtracted=true
+                                }                        	
+                            }
+                        }
+                    }else{ //sonst wird der TARGETNODE erstellt
+                        if(isLastTargetNodeLibrary){ //Library wird erstellt, da es eine externe Dependency ist
+                            targetNode = new myLibrary(group:dep.getModuleGroup(), name:dep.getModuleName(), id:targetId, version:dep.getModuleVersion())
+                            targetNode.addBranchVersion(currentBranchVersion)
+                            
+                        }else{
+                            targetNode = new myModule(group:dep.getModuleGroup(), name:dep.getModuleName(), id:targetId) //Platzhalter für DoubleNameModules
+                            targetNode.addBranchVersion(currentBranchVersion)   
+                            placeholderModulesMap.put(targetId, dep);   
+                        }
+                        nodeMap.put(targetId, targetNode) 
+                    }
+                    if(myDep==null){
+                        def depId = nextId()
+                        myDep = new myDependency(sourceId:sourceId, targetId:targetId, depId: depId)
+                        myDep.configurations.add(conf.name) 
+                        myDep.addBranchVersion(currentBranchVersion)
+                        depMap.put(myDep.depId, myDep)
+                        sourceNode.addDep(depId)
+                        targetNode.addTargetDep(depId) 
+                    } 
+            }
+
+             //Extraktion der Dependencies eines Moduls                  
+            ext.extractModuleDependencies = { project, moduleId ->
+                project.getConfigurations().all{ conf ->   //Konfigurations des Moduls werden durchgegangen
+                    if(!allConfigurations.contains(conf.name)){ //und in den GesamtConfigurations gespeichert, falls noch nicht vorhanden
+                        allConfigurations.add(conf.name)
+                    }     
+                    
+                    //direkte Abhängigkeiten des Moduls werden durchgegangen
+                    try{ 
+                        conf.getResolvedConfiguration().getFirstLevelModuleDependencies().each{ dep->  
+                            saveDependency(dep, conf, moduleId)  //werden gespeichert 
+                            extractTransitiveDependencies(conf, dep) //und deren transitive Abhängigkeiten werden extrahiert         
+                        }   
+                    }catch(Exception e){}             
+                }
+            }
+
+
+
+
+
+            //Extraktion der SubModule eines Moduls
+            ext.extractSubModules = { project, id -> 
+                project.childProjects.collect{ key, subProject ->
+                    extractProject(subProject, id)
+                }
+            }
+
+            //extrahiert alle benötigten Informationen aus einem Projekt
+            ext.extractProject = { project, rootId -> 
+                println "Extracting Data of "+project.group+":"+project.name 
+                def id = getModuleIdByProjectAndRootId(project, rootId)
+                extractModuleDependencies(project, id)
+                extractSubModules(project, id)
+            }
+
+
+            
+            ext.getPathByRootId = { rootId ->
+                def idPath = "";
+                if(rootId != null){
+                    def rootNode = nodeMap.get(rootId)
+                    if(rootNode.rootId !=null){
+                    	idPath = rootNode.path+rootNode.name+">"
+                	}
+                }
+                return idPath
+            }
+
+            ext.getModuleIdByProjectAndRootId = { project, rootId ->
+                return getPathByRootId(rootId)+project.group+":"+project.name 
+            }
+
+            //extrahiert die Gruppe des Projektes und seinen Unterprojekten
+            //- wird bei der DependencyExtraktion zur Erkennung von Modulen benutzt
+            //extrahiert zusätzlich die generellen Daten eines Moduls (nichts dessen Dependencies)
+            ext.extractProjectGroupsAndModules = { project, rootId ->
+                if(!groups.contains(project.getGroup())){
+                    groups<<project.getGroup()
+                }
+
+                def moduleId = getModuleIdByProjectAndRootId(project, rootId)
+                extractModule(project, rootId, moduleId)
+
+                project.childProjects.collect{ key, subProject ->
+                      extractProjectGroupsAndModules(subProject, moduleId)
+                }
+            }
+              
+
+            //extrahiert Daten eines Moduls, aber nicht dessen Dependencies
+            ext.extractModule = { project, rootId, moduleId ->
+                def node = nodeMap.get(moduleId)
+                if(node==null){
+                    def idPath = getPathByRootId(rootId)
+                    node = new myModule(group:project.group, name:project.name, id:moduleId, rootId:rootId,  path:idPath, version:project.version, description:project.description)
+                    
+                    if(!rootId.equals(null)){
+                        nodeMap.get(rootId).addSub(moduleId)
+                    }                    
+                }
+                node.addBranchVersion(currentBranchVersion)
+                nodeMap.put(moduleId, node)
+            }
+
+
+            //Daten werden in einer JSON Datei gespeichert
+            ext.writeJSON = { allModules, allLibs ->
+                    def jsonFile = new File(path+jsonExtension)  
+                    def builder = new groovy.json.JsonBuilder()
+                    builder.call({ 
+                        branchVersions allBranchVersions
+                        projectGroups groups
+                        configurations allConfigurations           
+                        modules allModules.values()
+                        libraries allLibs.values()
+                        libsWithMultipleVersions libsWithMultipleVersionsList 
+                        modulesWithDoubleName modulesWithDoubleNameList
+                        edges depMap.values()
+                    })
+                    jsonFile.write builder.toPrettyString() 
+            }
+
+            ext.readPastJson = {
+                try{
+                    def jsonFile = new File(path+jsonExtension)
+                    def slurper = new groovy.json.JsonSlurper()
+                    def json = slurper.parseText( jsonFile.getText() )
+                    mapPastData(json)
+                }catch(Exception e){} //es sind keine vergangenen Daten vorhanden
+             }
+
+            ext.mapPastData = { json ->
+                allBranchVersions = json.branchVersions
+                allConfigurations = json.configurations
+                groups = json.projectGroups
+                idCreator = json.edges.size()-1
+                json.modules.each{ module -> 
+                    nodeMap.put( module.id,
+                        new myModule(
+                            group:module.group, name:module.name, version:module.version, id:module.id, 
+                            dependencies:module.dependencies, targetDependencies:module.targetDependencies,
+                            branchVersions:module.branchVersions, path:module.path,
+                            rootId:module.rootId, subModules:module.subModules, description:module.description
+                   
+                        )
+                    )
+                }
+                json.libraries.each{ lib -> 
+                      nodeMap.put( lib.id,
+                        new myLibrary(
+                            group:lib.group, name:lib.name, version:lib.version, id:lib.id, 
+                            dependencies:lib.dependencies, targetDependencies:lib.targetDependencies,
+                            branchVersions:lib.branchVersions
+                        )
+                    )
+                }
+                json.edges.each{ dep ->
+                    depMap.put( dep.depId,
+                        new myDependency(
+                            sourceId:dep.sourceId, targetId:dep.targetId, depId: dep.depId, 
+                            configurations:dep.configurations, branchVersions:dep.branchVersions
+                        )
+                    )
+                } 
+            }
+
+             //TODO mit Datum
+            ext.extractCurrentVersion = { project ->
+                def version = project.version
+                if(project.version == "unspecified"){
+                    project.childProjects.collect{ key, subProject ->
+                        version = extractCurrentVersion(subProject)
+                        if(version != "unspecified"){
+                            return version 
+                        }
+                    }
+                }
+                return version
+            }
+
+             ext.printTitle = {
+                println ""
+                println "----------------------------------------------------------------"
+                println "             DEPENDENCY STORY    - THE PLUGIN                   "
+                println "----------------------------------------------------------------"
+                println ""
+             }
+
+
+            doLast{         
+                    printTitle()             
+                    currentBranchVersion = extractCurrentVersion(buildProject)
+
+
+                    readPastJson()
+                    allBranchVersions.add(currentBranchVersion)
+
+
+                    //Extraktion der benötigten Daten                     
+                    extractProjectGroupsAndModules(buildProject, null)
+                    extractProject(buildProject, null)
+
+                    def allModules = nodeMap.findAll { it.value instanceof myModule}
+                    def allLibs = nodeMap.findAll { it.value instanceof myLibrary }
+                    extractLibsWithMultipleList( allLibs )
+                    extractModulesWithDoubleName( allModules )
+
+                    //Mitteilung an den User in der Konsole
+                    println ""
+                    println "In your project "+buildProject.name+ " are "+depMap.size()+" dependencies extracted between "+allModules.size()+" modules and "+allLibs.size()+" libraries."
+                    println "But dependencies to the modules "+modulesWithDoubleNameList+" could not extracted properly because you declared several modules with the same name." 
+                    println "To see the vizualization of the dependencies visit "+path+htmlExtension
+
+                    println ""
+                    println ""
+                    //allLibs.each{ println it.value.id }
+
+                    writeJSON(allModules, allLibs) 
+            }
+        }
+
+    }
+}
